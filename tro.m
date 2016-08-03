@@ -80,13 +80,13 @@ dofs = berdy.model().getNrOfDOFs();
 params.freq = 2.0; 
 params.A    = 1.0;
 params.w    = repmat(2*pi*params.freq,dofs,1);
-params.ddqRelNoise = 0.00002;
-params.trqsRelNoise = 0.002;
-params.stdDevDynEq  = 1e-4;
-params.stdDevDynVariablesPrior = 1000;
+params.ddqRelNoise = 0.1;
+params.trqsRelNoise = 0.1;
+params.stdDevDynEq  = 1e-3;
+params.stdDevDynVariablesPrior = 1e3;
 
 dofs = berdy.model().getNrOfDOFs();
-dataset.t = 0:0.1:20;
+dataset.t = 0:0.02:3;
 
 dataset.q = sin(params.w*dataset.t);
 dataset.dq = params.w*cos(params.w*dataset.t);
@@ -112,54 +112,104 @@ end
 measurements.ddq = zeros(size(dataset.ddq));
 measurements.trqs = zeros(size(dataset.trqs));
 
-params.sigma_ddq = params.ddqRelNoise*std(dataset.ddq')';
-params.sigma_trqs = params.trqsRelNoise*std(dataset.trqs')';
+params.stdDev_ddq = params.ddqRelNoise*std(dataset.ddq')';
+params.stdDev_trqs = params.trqsRelNoise*std(dataset.trqs')';
 for i = 1:nrOfSamples
-    measurements.ddq(:,i) = dataset.ddq(:,i) + normrnd(0,params.sigma_ddq,dofs,1);
-    measurements.trqs(:,i) = dataset.trqs(:,i) + normrnd(0,params.sigma_trqs,dofs,1);
+    measurements.ddq(:,i) = dataset.ddq(:,i) + normrnd(0,params.stdDev_ddq,dofs,1);
+    measurements.trqs(:,i) = dataset.trqs(:,i) + normrnd(0,params.stdDev_trqs,dofs,1);
 end
 
-%% Compute identifiable parameters from joint torque 
-identifibleParamsMatrix = computeJointTorquesIdentifiableParams(dynComp,buffers,params);
+paramsStr = sprintf('ddq %.2e trqs %.2e dynEq %.2e dynVar %.2e',params.stdDev_ddq,params.stdDev_trqs,params.stdDevDynEq,params.stdDevDynVariablesPrior);
+
+%% Compute identifiable parameters from the specified dataset (currently hardcode to always give just the more relevant parameter)
+identifibleParamsMatrix = computeJointTorquesExperimentalIdentifiableParams(dynComp,buffers,params,dataset,measurements);
 [nrOfIdentifiableParams,nrOfTotalParams] = size(identifibleParamsMatrix);
+% Currently we are assuming to just identify just one inertial parameter 
+assert(nrOfIdentifiableParams == 1);
+dynComp.getModelDynamicsParameters(buffers.fullCadParams);
+groundTruthValues = identifibleParamsMatrix*buffers.fullCadParams.toMatlab();
+
+% For simplifyng the log data exploration, we make sure that the selected
+% parameters is positive 
+if( groundTruthValues < 0.0 )
+    identifibleParamsMatrix = -identifibleParamsMatrix;
+end
+groundTruthValues = identifibleParamsMatrix*buffers.fullCadParams.toMatlab();
+
 
 %% Estimate inertial parameters, return cell array of estimated parameters for number of used samples 
 classicalEstimationResults = getClassicalEstimationResults(dynComp,buffers,dataset,measurements,identifibleParamsMatrix);
 
 %% Plot error in classical estimation results 
-dynComp.getModelDynamicsParameters(buffers.fullCadParams);
-groundTruthValues = identifibleParamsMatrix*buffers.fullCadParams.toMatlab();
+classicalEstimationOnRelevantParameters = classicalEstimationResults;
 
-classicalEstimationErrors = classicalEstimationResults-repmat(groundTruthValues,1,nrOfSamples);
+classicalEstimationRelativeErrors = diag(1./groundTruthValues)*(classicalEstimationOnRelevantParameters-repmat(groundTruthValues,1,nrOfSamples));
 % Drop the first few samples 
 figure;
-plot(dataset.t,classicalEstimationErrors');
+title('Relative error on inertial parameters identification')
+plot(dataset.t(3:end),classicalEstimationRelativeErrors(:,3:end)');
+hold on;
+plot(dataset.t(3:end),zeros(size(dataset.t(3:end))));
+dim = [.2 .5 .3 .3];
+annotation('textbox',dim,'String',paramsStr,'FitBoxToText','on');
+title('Relative error on inertial parameters identification')
+% ylim([-3,3]);
 
 %% Load covariances matrices 
-covs.cov_e_given_d = params.stdDevDynEq*eye(nrOfBerdyDynEquations,nrOfBerdyDynEquations);
-covs.cov_d         = params.stdDevDynVariablesPrior*eye(nrOfBerdyDynVariables,nrOfBerdyDynVariables);
+covs.cov_e_given_d = params.stdDevDynEq*params.stdDevDynEq*eye(nrOfBerdyDynEquations,nrOfBerdyDynEquations);
+covs.cov_d         = params.stdDevDynVariablesPrior*params.stdDevDynVariablesPrior*eye(nrOfBerdyDynVariables,nrOfBerdyDynVariables);
 % Sensors should be 2*dofs : first the accelerations then the torques 
 % This should be modified to have a nice introspection mechanism, but for
 % now this is ok 
 assert(nrOfBerdySensors == 2*berdy.model().getNrOfDOFs());
 nrOfDOFs = berdy.model().getNrOfDOFs();
-cov_ddq = params.sigma_ddq*eye(nrOfDOFs,nrOfDOFs);
-cov_trqs = params.sigma_trqs*eye(nrOfDOFs,nrOfDOFs);
+cov_ddq = params.stdDev_ddq*params.stdDev_ddq*eye(nrOfDOFs,nrOfDOFs);
+cov_trqs = params.stdDev_ddq*params.stdDev_trqs*eye(nrOfDOFs,nrOfDOFs);
 covs.cov_y_given_d   = blkdiag(cov_ddq,cov_trqs);
 measurements.y = [measurements.ddq;measurements.trqs];
+
+%% Let's define the loglikeliwood
+ll = @(pi) getLogLikeLihoodOfInertialParameters(berdy,buffers,covs,dataset,measurements,identifibleParamsMatrix,pi);
+minusll = @(pi) -ll(pi);
 
 %% Plot log likeliwood of estimation 
 llClassicalEstimation = zeros(nrOfSamples,1);
 lClassicalEstimation  = zeros(nrOfSamples,1);
 for sampleIdx = 1:nrOfSamples
     fprintf('Computing ll for sample cad estimate at sample %d of of %d\n',sampleIdx,nrOfSamples)
-    [llClassicalEstimation(sampleIdx),lClassicalEstimation(sampleIdx)] = getLogLikeLihoodOfInertialParameters(berdy,buffers,covs,dataset,measurements,identifibleParamsMatrix,classicalEstimationResults(:,sampleIdx));
+    [llClassicalEstimation(sampleIdx),lClassicalEstimation(sampleIdx)] = ll(classicalEstimationResults(:,sampleIdx));
 end
+
+% Get ll of totally wrong data 
+llGroundTruth = getLogLikeLihoodOfInertialParameters(berdy,buffers,covs,dataset,measurements,identifibleParamsMatrix,groundTruthValues);
+
 figure;
-plot(dataset.t,llClassicalEstimation);
+plot(dataset.t(3:end),llClassicalEstimation(3:end));
+hold on;
+plot(dataset.t(3:end),llGroundTruth*ones(size(dataset.t(3:end))));
+annotation('textbox',dim,'String',paramsStr,'FitBoxToText','on');
+title('Evolution of LogLikelihood of inertial parameters estimated');
+
+% Get ll of actual data 
+% llGroundTruth = getLogLikeLihoodOfInertialParameters(berdy,buffers,covs,dataset,measurements,identifibleParamsMatrix,groundTruthValues);
+
+% Let's explore the face of the ll function 
+inPar = 1.07:0.01:2;
+llExploration = zeros(size(inPar));
+for sampleIdx = 1:size(inPar,2);
+    fprintf('Computing ll for inertial parameters %f at sample %d of of %d\n',inPar(sampleIdx),sampleIdx,size(inPar,2))
+    llExploration(sampleIdx) = ll(inPar(sampleIdx));
+end
+
+% Let's find the maximum of the ll function
+inertialParamEstimatedMinizingLL = fminsearch(minusll,groundTruthValues);
+
 figure;
-plot(dataset.t,lClassicalEstimation);
-
-
-
+plot(inPar,(llExploration),'b.');
+hold on;
+plot([groundTruthValues groundTruthValues], [min((llExploration)) max((llExploration))], 'g');
+plot([classicalEstimationResults(:,nrOfSamples) classicalEstimationResults(:,nrOfSamples)], [min((llExploration)) max((llExploration))], 'r');
+plot([inertialParamEstimatedMinizingLL inertialParamEstimatedMinizingLL], [min((llExploration)) max((llExploration))], 'b');
+annotation('textbox',dim,'String',paramsStr,'FitBoxToText','on');
+title('LogLikelihood function');
 
