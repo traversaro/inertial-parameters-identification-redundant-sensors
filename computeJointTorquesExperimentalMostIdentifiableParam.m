@@ -1,4 +1,4 @@
-function [ idParamsMatrix ] = computeJointTorquesExperimentalIdentifiableParams( dynComp, buffers, params , dataset, measurements)
+function [ idParamsMatrix ] = computeJointTorquesExperimentalMostIdentifiableParam( dynComp, buffers, params , dataset, measurements)
 %computeIdentifiableParams Compute inertial parameters identifiable from
 %fixed base torque measurements
 
@@ -19,9 +19,7 @@ for i = 1:nrOfSamples
 end
 
 [U,S,V] = svd(acc);
-rank(acc,S(1,1)*1e-2)
-S
-idParamsMatrix = (V(:,1:rank(acc,S(1,1)*1e-2)))';
+idParamsMatrix = (V(:,1))';
 
 end
 

@@ -89,8 +89,17 @@ dataset.t = 0:0.02:2;
 dataset.q = sin(params.w*dataset.t);
 dataset.dq = params.w*cos(params.w*dataset.t);
 dataset.ddq = -params.w*params.w*sin(params.w*dataset.t);
-
 [dofs,nrOfSamples] = size(dataset.q);
+
+dataset.t = 1:nrOfSamples;
+
+% nrOfSamples = 15;
+% dataset.t   = 1:nrOfSamples;
+% 
+% dataset.q = rand(dofs,nrOfSamples);
+% dataset.dq = rand(dofs,nrOfSamples);
+% dataset.ddq = rand(dofs,nrOfSamples);
+
 
 % Compute dataset.trq throught RNEA
 dataset.trqs = zeros(size(dataset.dq));
@@ -120,7 +129,7 @@ end
 paramsStr = sprintf('ddq %.2e trqs %.2e dynEq %.2e dynVar %.2e nrOfSamples %d',params.stdDev_ddq,params.stdDev_trqs,params.stdDevDynEq,params.stdDevDynVariablesPrior,nrOfSamples);
 
 %% Compute identifiable parameters from the specified dataset (currently hardcode to always give just the more relevant parameter)
-identifibleParamsMatrix = computeJointTorquesExperimentalIdentifiableParams(dynComp,buffers,params,dataset,measurements);
+identifibleParamsMatrix = computeJointTorquesExperimentalMostIdentifiableParam(dynComp,buffers,params,dataset,measurements);
 [nrOfIdentifiableParams,nrOfTotalParams] = size(identifibleParamsMatrix);
 % Currently we are assuming to just identify just one inertial parameter 
 assert(nrOfIdentifiableParams == 1);
@@ -156,7 +165,7 @@ minusllOnAllSamples = @(pi) -llOnAllSamples(pi);
 llGroundTruth = getLogLikeLihoodOfInertialParameters(berdy,buffers,covs,dataset,measurements,identifibleParamsMatrix,groundTruthValues);
 
 % Let's explore the face of the ll function 
-inPar = -2:0.1:2;
+inPar = -10:0.1:10;
 llExploration = zeros(size(inPar));
 for sampleIdx = 1:size(inPar,2);
     fprintf('Computing ll for inertial parameters %f (%d out of %d)\n',inPar(sampleIdx),sampleIdx,size(inPar,2))
@@ -164,18 +173,21 @@ for sampleIdx = 1:size(inPar,2);
 end
 
 figure;
-plot(inPar,(llExploration),'b.');
+plot(inPar,(llExploration),'b','LineWidth',4);
 hold on;
-% Let's find the maximum of the ll function
-fprintf('Maximizing ll on the complete dataset\n');
-tic;
-inertialParamEstimatedMinizingLL = fminsearch(minusllOnAllSamples,groundTruthValues);
-timeSpent = toc;
-fprintf('Seconds spent in optimizing complete dataset LL : %f\n',timeSpent);
-plot([inertialParamEstimatedMinizingLL inertialParamEstimatedMinizingLL], [min((llExploration)) max((llExploration))], 'b');
-dim = [.2 .5 .3 .3];
-annotation('textbox',dim,'String',paramsStr,'FitBoxToText','on');
-title('LogLikelihood function');
+% % Let's find the maximum of the ll function
+% fprintf('Maximizing ll on the complete dataset\n');
+% tic;
+% inertialParamEstimatedMinizingLL = fminsearch(minusllOnAllSamples,groundTruthValues);
+% timeSpent = toc;
+% fprintf('Seconds spent in optimizing complete dataset LL : %f\n',timeSpent);
+% plot([inertialParamEstimatedMinizingLL inertialParamEstimatedMinizingLL], [min((llExploration)) max((llExploration))], 'b');
+% dim = [.2 .5 .3 .3];
+% annotation('textbox',dim,'String',paramsStr,'FitBoxToText','on');
+title('Log Likelihood function');
+ylabel('Log Likelihood');
+xlabel('Base inertial parameter value')
+set(gca,'FontSize',25);
 
 %% After we saw the shape of the LL, lets 
 identification_enabled = true;
@@ -189,7 +201,7 @@ if( identification_enabled )
     %% Estimate inertial parameters using Berdy maximization of LL 
     fprintf('Maximizing ll on the complete set of partial datasets\n');
     tic;
-    berdyEstimationResults     = getBerdyEstimationResults(berdy,buffers,covs,dataset,measurements,identifibleParamsMatrix);
+    berdyEstimationResults     = getBerdyEstimationResults(berdy,buffers,covs,dataset,measurements,identifibleParamsMatrix,groundTruthValues);
     timeSpent = toc;
     fprintf('Seconds spent in optimizing complete set of datasets LL : %f\n',timeSpent);
     
@@ -207,39 +219,44 @@ if( identification_enabled )
     end
     
     %% Plot relative error in estimation results 
-    classicalEstimationRelativeErrors = diag(1./groundTruthValues)*(classicalEstimationResults-repmat(groundTruthValues,1,nrOfSamples));
-    berdyEstimationRelativeErrors = diag(1./groundTruthValues)*(berdyEstimationResults-repmat(groundTruthValues,1,nrOfSamples));
+    classicalEstimationErrors = (classicalEstimationResults-repmat(groundTruthValues,1,nrOfSamples));
+    classicalEstimationRelativeErrorsNorms = sqrt(sum(abs(classicalEstimationErrors).^2,1))./norm(groundTruthValues);
+
+    berdyEstimationErrors = (berdyEstimationResults-repmat(groundTruthValues,1,nrOfSamples));
+    berdyEstimationRelativeErrorsNorms = sqrt(sum(abs(berdyEstimationErrors).^2,1))./norm(groundTruthValues);
 
     % Drop the first few samples 
     figure;
-    title('Relative error on inertial parameters identification')
-    plot(dataset.t(3:end),classicalEstimationRelativeErrors(:,3:end)','r');
+    lineWidth=4;
+    plot(dataset.t(5:end),classicalEstimationRelativeErrorsNorms(:,5:end)','r--','LineWidth',lineWidth);
     hold on;
-    plot(dataset.t(3:end),berdyEstimationRelativeErrors(:,3:end)','b');
-    plot(dataset.t(3:end),zeros(size(dataset.t(3:end))),'g');
-    dim = [.2 .5 .3 .3];
-    annotation('textbox',dim,'String',paramsStr,'FitBoxToText','on');
-    title('Relative error on inertial parameters identification')
+    plot(dataset.t(5:end),berdyEstimationRelativeErrorsNorms(:,5:end)','b-.','LineWidth',lineWidth);
+    plot(dataset.t(5:end),zeros(size(dataset.t(5:end))),'g','LineWidth',lineWidth);
+    title('Two links inertial parameters identification')
+    xlabel('# of considered samples');
+    ylabel('Relative norm error');
+    legend('Least Squares','Likelihood Maximization','Ground Truth');
+    set(gca,'FontSize',25);
 
     
     % Plot inertial parameters 
-    figure;
-    title('Inertial parameters identification')
-    plot(dataset.t(3:end),classicalEstimationResults(:,3:end)','r');
-    hold on;
-    plot(dataset.t(3:end),berdyEstimationResults(:,3:end)','b');
-    plot(dataset.t(3:end),groundTruthValues*ones(size(dataset.t(3:end))),'g');
-    dim = [.2 .5 .3 .3];
-    annotation('textbox',dim,'String',paramsStr,'FitBoxToText','on');
-    title('Inertial parameters identification')
+%     figure;
+%     title('Inertial parameters identification')
+%     plot(dataset.t(3:end),classicalEstimationResults(:,3:end)','r');
+%     hold on;
+%     plot(dataset.t(3:end),berdyEstimationResults(:,3:end)','b');
+%     plot(dataset.t(3:end),groundTruthValues*ones(size(dataset.t(3:end))),'g');
+%     dim = [.2 .5 .3 .3];
+%     annotation('textbox',dim,'String',paramsStr,'FitBoxToText','on');
+%     title('Inertial parameters identification')
 
     %% Plot log likeliwood of classical estimation results  
-    figure;
-    plot(dataset.t(5:end),llClassicalEstimation(5:end),'r');
-    hold on;
-    plot(dataset.t(5:end),llBerdyEstimation(5:end),'b');
-    plot(dataset.t(5:end),llGroundTruth*ones(size(dataset.t(5:end))),'g');
-    annotation('textbox',dim,'String',paramsStr,'FitBoxToText','on');
-    title('Evolution of LogLikelihood of inertial parameters estimated');
+%     figure;
+%     plot(dataset.t(5:end),llClassicalEstimation(5:end),'r');
+%     hold on;
+%     plot(dataset.t(5:end),llBerdyEstimation(5:end),'b');
+%     plot(dataset.t(5:end),llGroundTruth*ones(size(dataset.t(5:end))),'g');
+%     annotation('textbox',dim,'String',paramsStr,'FitBoxToText','on');
+%     title('Evolution of LogLikelihood of inertial parameters estimated');
 end
 
